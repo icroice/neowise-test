@@ -75,7 +75,8 @@
       let data = null;
       try {
         data = await reply.json();
-      } catch {
+      } catch (error) {
+        if (error.name === "AbortError") return; // запрос отменён новым сабмитом — не рендерим
         // не-JSON тело (например, HTML-страница шлюза) — обработается ветками ниже
       }
 
@@ -83,6 +84,8 @@
         renderReady(data);
       } else if (data?.status === "manual_review") {
         renderMessage("manual", "Не удалось автоматически разобрать заявку. Черновик не подготовлен — обработайте заявку вручную.");
+      } else if (reply.status === 413) {
+        renderMessage("invalid", "Заявка слишком длинная — сократите текст и попробуйте ещё раз.");
       } else if (reply.status === 400) {
         renderMessage("invalid", "Введите непустой текст заявки.");
       } else {

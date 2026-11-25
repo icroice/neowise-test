@@ -37,7 +37,14 @@ test.before(async () => {
   await started;
 });
 
-test.after(() => server?.kill());
+test.after(async () => {
+  if (!server) return;
+  server.kill();
+  const exited = new Promise((resolve) => server.once("exit", resolve));
+  const forceKill = setTimeout(() => server.kill("SIGKILL"), 1000); // на случай зависания при завершении
+  await exited;
+  clearTimeout(forceKill);
+});
 
 async function post(body, headers = {}) {
   return fetch(`${BASE}/api/triage`, {
@@ -45,6 +52,11 @@ async function post(body, headers = {}) {
     headers: { "Content-Type": "application/json", ...headers },
     body,
   });
+}
+
+async function assertManualReview(reply) {
+  assert.equal(reply.status, 200);
+  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
 }
 
 test("успешный разбор: тема и непустой черновик", async () => {
@@ -77,10 +89,10 @@ test("нестроковый text → 400 invalid_input", async () => {
   }
 });
 
-test("тело больше 1 МБ → 400 invalid_input", async () => {
+test("тело больше 1 МБ → 413 body_too_large", async () => {
   const reply = await post(JSON.stringify({ text: "а".repeat(2 * 1024 * 1024) }));
-  assert.equal(reply.status, 400);
-  assert.deepEqual(await reply.json(), { status: "invalid_input" });
+  assert.equal(reply.status, 413);
+  assert.deepEqual(await reply.json(), { status: "body_too_large" });
 });
 
 test("битый JSON в запросе → 400 invalid_input", async () => {
@@ -91,33 +103,28 @@ test("битый JSON в запросе → 400 invalid_input", async () => {
 
 test("ошибка модели → 200 manual_review", async () => {
   const reply = await post(JSON.stringify({ text: "[error] когда доставка?" }));
-  assert.equal(reply.status, 200);
-  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
+  await assertManualReview(reply);
 });
 
-test("таймаут модели → 200 manual_review быстрее 1200 мс", async () => {
+test("таймаут модели → 200 manual_review быстрее 1000 мс", async () => {
   const startedAt = Date.now();
   const reply = await post(JSON.stringify({ text: "[timeout] уточните детали" }));
   const elapsed = Date.now() - startedAt;
-  assert.equal(reply.status, 200);
-  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
+  await assertManualReview(reply);
   assert.ok(elapsed < 1000, `ожидали < 1000 мс, получили ${elapsed} мс`);
 });
 
 test("битый JSON в ответе модели → 200 manual_review", async () => {
   const reply = await post(JSON.stringify({ text: "[bad-json] привет" }));
-  assert.equal(reply.status, 200);
-  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
+  await assertManualReview(reply);
 });
 
 test("недопустимая тема → 200 manual_review", async () => {
   const reply = await post(JSON.stringify({ text: "[bad-topic] привет" }));
-  assert.equal(reply.status, 200);
-  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
+  await assertManualReview(reply);
 });
 
 test("пустой черновик → 200 manual_review", async () => {
   const reply = await post(JSON.stringify({ text: "[empty-draft] привет" }));
-  assert.equal(reply.status, 200);
-  assert.deepEqual(await reply.json(), { status: "manual_review", topic: null, draft: null });
+  await assertManualReview(reply);
 });

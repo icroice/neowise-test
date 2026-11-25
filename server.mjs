@@ -18,12 +18,14 @@ function manualReview(response) {
   return json(response, 200, { status: "manual_review", topic: null, draft: null });
 }
 
+class BodyTooLargeError extends Error {}
+
 async function readBody(request) {
   const chunks = [];
   let received = 0;
   for await (const chunk of request) {
     received += chunk.length;
-    if (received > MAX_BODY_BYTES) throw new Error("request body too large");
+    if (received > MAX_BODY_BYTES) throw new BodyTooLargeError("request body too large");
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -53,10 +55,13 @@ async function handleTriage(request, response) {
   let payload;
   try {
     payload = JSON.parse(await readBody(request));
-  } catch {
+  } catch (error) {
     // Тело при превышении лимита прочитано не до конца — сокет после ответа
     // закрываем, иначе клиент может переиспользовать его и получить обрыв.
     response.setHeader("Connection", "close");
+    if (error instanceof BodyTooLargeError) {
+      return json(response, 413, { status: "body_too_large" });
+    }
     return json(response, 400, { status: "invalid_input" });
   }
 
