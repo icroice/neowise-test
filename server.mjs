@@ -4,17 +4,68 @@ import { classify } from "./mock-ai.mjs";
 
 const html = await readFile(new URL("./index.html", import.meta.url));
 
+const MODEL_TIMEOUT_MS = 300;
+const ALLOWED_TOPICS = new Set(["delivery", "pricing", "other"]);
+
 function json(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
 
-async function handleTriage(request, response) {
+function manualReview(response) {
+  return json(response, 200, { status: "manual_review", topic: null, draft: null });
+}
+
+async function readBody(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
-  const { text } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  const result = JSON.parse(await classify(text));
-  return json(response, 200, { status: "ready", ...result });
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// Вызов модели с ограничением по времени: имитатор поддерживает signal,
+// поэтому по таймауту ожидание прерывается, а не висит до конца delay.
+async function callModel(text) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+  try {
+    return await classify(text, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseModelOutput(raw) {
+  const { topic, draft } = JSON.parse(raw) ?? {};
+  const topicOk = typeof topic === "string" && ALLOWED_TOPICS.has(topic);
+  const draftOk = typeof draft === "string" && draft.trim() !== "";
+  if (!topicOk || !draftOk) return null;
+  return { topic, draft };
+}
+
+async function handleTriage(request, response) {
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request));
+  } catch {
+    return json(response, 400, { status: "invalid_input" });
+  }
+
+  const { text } = payload ?? {};
+  if (typeof text !== "string" || text.trim() === "") {
+    return json(response, 400, { status: "invalid_input" });
+  }
+
+  let parsed;
+  try {
+    parsed = parseModelOutput(await callModel(text));
+  } catch {
+    return manualReview(response); // таймаут, ошибка модели или битый JSON в ответе
+  }
+  if (!parsed) {
+    return manualReview(response); // неподходящая тема или пустой черновик
+  }
+
+  return json(response, 200, { status: "ready", ...parsed });
 }
 
 createServer(async (request, response) => {
