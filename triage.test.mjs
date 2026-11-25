@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -15,17 +14,27 @@ test.before(async () => {
   server = spawn(process.execPath, ["server.mjs"], {
     cwd: rootDir,
     env: { ...process.env, PORT: String(PORT) },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      await fetch(`${BASE}/`);
-      return;
-    } catch {
-      await delay(100);
-    }
-  }
-  throw new Error("сервер не поднялся за 5 с");
+
+  // Готовность ждём по «listening» из stdout самого потомка: если порт занят
+  // чужим процессом, наш потомок умрёт с EADDRINUSE, и прогон упадёт с ясной
+  // причиной вместо прогона против чужого слушателя.
+  const started = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("сервер не поднялся за 5 с")), 5000);
+    server.stdout.on("data", (chunk) => {
+      if (String(chunk).includes("listening")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    server.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`процесс сервера умер (code=${code}, signal=${signal}) — возможно, порт ${PORT} занят`));
+    });
+    server.stderr.on("data", () => {}); // сливаем stderr, чтобы буфер не переполнился
+  });
+  await started;
 });
 
 test.after(() => server?.kill());
@@ -56,6 +65,20 @@ test("пустой текст → 400 invalid_input", async () => {
 
 test("отсутствующее поле text → 400 invalid_input", async () => {
   const reply = await post(JSON.stringify({}));
+  assert.equal(reply.status, 400);
+  assert.deepEqual(await reply.json(), { status: "invalid_input" });
+});
+
+test("нестроковый text → 400 invalid_input", async () => {
+  for (const text of [123, true, null, ["доставка"]]) {
+    const reply = await post(JSON.stringify({ text }));
+    assert.equal(reply.status, 400, `ожидали 400 для text=${JSON.stringify(text)}`);
+    assert.deepEqual(await reply.json(), { status: "invalid_input" });
+  }
+});
+
+test("тело больше 1 МБ → 400 invalid_input", async () => {
+  const reply = await post(JSON.stringify({ text: "а".repeat(2 * 1024 * 1024) }));
   assert.equal(reply.status, 400);
   assert.deepEqual(await reply.json(), { status: "invalid_input" });
 });

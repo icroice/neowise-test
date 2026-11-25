@@ -4,7 +4,9 @@ import { classify } from "./mock-ai.mjs";
 
 const html = await readFile(new URL("./index.html", import.meta.url));
 
+const port = Number(process.env.PORT || 3000);
 const MODEL_TIMEOUT_MS = 300;
+const MAX_BODY_BYTES = 1_048_576; // 1 МБ: заявка — короткий текст, большее не принимаем
 const ALLOWED_TOPICS = new Set(["delivery", "pricing", "other"]);
 
 function json(response, status, body) {
@@ -18,7 +20,12 @@ function manualReview(response) {
 
 async function readBody(request) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let received = 0;
+  for await (const chunk of request) {
+    received += chunk.length;
+    if (received > MAX_BODY_BYTES) throw new Error("request body too large");
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks).toString("utf8");
 }
 
@@ -47,6 +54,9 @@ async function handleTriage(request, response) {
   try {
     payload = JSON.parse(await readBody(request));
   } catch {
+    // Тело при превышении лимита прочитано не до конца — сокет после ответа
+    // закрываем, иначе клиент может переиспользовать его и получить обрыв.
+    response.setHeader("Connection", "close");
     return json(response, 400, { status: "invalid_input" });
   }
 
@@ -82,4 +92,4 @@ createServer(async (request, response) => {
   } catch {
     json(response, 500, { status: "server_error" });
   }
-}).listen(Number(process.env.PORT || 3000), "127.0.0.1");
+}).listen(port, "127.0.0.1", () => console.log(`listening on http://127.0.0.1:${port}`));
