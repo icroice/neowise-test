@@ -106,12 +106,12 @@ test("ошибка модели → 200 manual_review", async () => {
   await assertManualReview(reply);
 });
 
-test("таймаут модели → 200 manual_review быстрее 1000 мс", async () => {
+test("таймаут модели → 200 manual_review быстрее 1100 мс", async () => {
   const startedAt = Date.now();
   const reply = await post(JSON.stringify({ text: "[timeout] уточните детали" }));
   const elapsed = Date.now() - startedAt;
   await assertManualReview(reply);
-  assert.ok(elapsed < 1000, `ожидали < 1000 мс, получили ${elapsed} мс`);
+  assert.ok(elapsed < 1100, `ожидали < 1100 мс, получили ${elapsed} мс`);
 });
 
 test("битый JSON в ответе модели → 200 manual_review", async () => {

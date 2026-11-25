@@ -33,13 +33,19 @@ async function readBody(request) {
 
 // Вызов модели с ограничением по времени: имитатор поддерживает signal,
 // поэтому по таймауту ожидание прерывается, а не висит до конца delay.
-async function callModel(text) {
+// Если клиент отключился — тоже прерываем: ответ писать некому.
+async function callModel(text, response) {
   const controller = new AbortController();
+  const onClientGone = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  response.once("close", onClientGone);
   const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
   try {
     return await classify(text, { signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    response.off("close", onClientGone);
   }
 }
 
@@ -56,10 +62,10 @@ async function handleTriage(request, response) {
   try {
     payload = JSON.parse(await readBody(request));
   } catch (error) {
-    // Тело при превышении лимита прочитано не до конца — сокет после ответа
-    // закрываем, иначе клиент может переиспользовать его и получить обрыв.
-    response.setHeader("Connection", "close");
     if (error instanceof BodyTooLargeError) {
+      // Тело прочитано не до конца — сокет после ответа закрываем,
+      // иначе клиент может переиспользовать его и получить обрыв.
+      response.setHeader("Connection", "close");
       return json(response, 413, { status: "body_too_large" });
     }
     return json(response, 400, { status: "invalid_input" });
@@ -72,8 +78,9 @@ async function handleTriage(request, response) {
 
   let parsed;
   try {
-    parsed = parseModelOutput(await callModel(text));
+    parsed = parseModelOutput(await callModel(text, response));
   } catch {
+    if (response.destroyed) return; // клиент отключился — отвечать некому
     return manualReview(response); // таймаут, ошибка модели или битый JSON в ответе
   }
   if (!parsed) {
